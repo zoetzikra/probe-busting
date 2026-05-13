@@ -124,8 +124,15 @@ def run(
     with open(out_path / "cfg.json", "w") as f:
         json.dump(config_snapshot, f, indent=2)
 
-    # Load model and tokenize
-    model, tokenizer = get_model_and_tokenizer(ModelName.LLAMA_70B_3_3)
+    # Load model truncated at the target layer. We only need layer-22 residual
+    # activations — layers 23..79 and the LM head are never used for probe
+    # scoring — so loading only the first `layer` transformer blocks shrinks
+    # the in-memory model from ~140 GB to ~40 GB (fits on one H100).
+    # This mirrors what the training pipeline already does (see
+    # Experiment.model property in experiment.py).
+    model, tokenizer = get_model_and_tokenizer(
+        ModelName.LLAMA_70B_3_3, cut_at_layer=layer
+    )
     tokenized = TokenizedDataset.from_dataset(dataset, tokenizer)
 
     # Single forward pass at the target layer

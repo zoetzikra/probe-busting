@@ -150,12 +150,14 @@ def get_gemma_model_and_tokenizer(
     if omit_model:
         return None, tokenizer
 
+    _workspace_weights = Path("/workspace/weights")
+    cache_dir = _workspace_weights if _workspace_weights.exists() else None
     model = AutoModelForCausalLM.from_pretrained(
         f"google/gemma-2-{model_name.size}b-it",
         device_map="auto",
         attn_implementation="eager",
         torch_dtype=dtype,
-        cache_dir=Path("/workspace/weights"),
+        cache_dir=cache_dir,
         local_files_only=False,
     )
 
@@ -244,7 +246,8 @@ def get_llama3_model_and_tokenizer(
         ModelName.LLAMA_70B: "meta-llama/Meta-Llama-3.1-70B-Instruct",
         ModelName.LLAMA_8B: "meta-llama/Meta-Llama-3.1-8B-Instruct",
     }[model_name]
-    models_directory = Path("/workspace/weights")
+    _workspace_weights = Path("/workspace/weights")
+    models_directory = _workspace_weights if _workspace_weights.exists() else None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
