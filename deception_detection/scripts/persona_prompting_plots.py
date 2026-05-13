@@ -139,16 +139,18 @@ def _line_plot(
     )
     for b in boundaries:
         ax.axvline(b, color="grey", linestyle=":", alpha=0.5)
+    # Place category labels in axes coordinates just above the plot so
+    # bbox_inches="tight" doesn't blow up the figure height.
     for cx, lbl in zip(centers, cat_labels):
         ax.text(
-            cx,
-            ax.get_ylim()[1],
+            cx / max(len(wide.index) - 1, 1),
+            1.02,
             lbl,
             ha="center",
             va="bottom",
             fontsize=9,
             color="black",
-            transform=ax.get_xaxis_transform(),
+            transform=ax.transAxes,
         )
 
     ax.set_xticks(x)
