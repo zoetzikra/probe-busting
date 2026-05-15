@@ -1,0 +1,19 @@
+{
+  "repe_folder": "/gpfs/home6/ztzifa/probe-busting/results/repe_layer_22_lr__repe_honesty__plain__llama-70b-3.3__20260513_224111",
+  "roleplaying_folder": "/gpfs/home6/ztzifa/probe-busting/results/roleplaying_layer_22_lr__roleplaying__plain__llama-70b-3.3__20260513_230733",
+  "model_name": "llama-70b-3.3",
+  "layer": 22,
+  "batch_size": 4,
+  "n_dialogues": 189,
+  "n_facts": 27,
+  "repe_detector_layers": [
+    22
+  ],
+  "rp_detector_layers": [
+    22
+  ],
+  "repe_train_data": "repe_honesty__plain",
+  "rp_train_data": "roleplaying__plain",
+  "repe_reg_coeff": 10.0,
+  "rp_reg_coeff": 10.0
+}
