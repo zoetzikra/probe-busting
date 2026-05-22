@@ -303,15 +303,26 @@ def _clean_many(
 # the claim" with "judge disagrees with the dataset label", which is not our concern).
 GATE_JUDGE_MODEL = "gpt-4o-mini"
 
+# NOTE: this gate prompt deliberately tells the comparator to ignore certain surface
+# dimensions (certainty/hedging, tense, phrasing, off-topic text). That is acceptable
+# even though those overlap with our poisons, because this guidance is given ONLY to the
+# corrective GATE, never to the cleaner. The cleaner stays attack-agnostic (it is the
+# method under test); the gate is just a pedantic equivalence check, and a zero-shot
+# generalizable wording made it over-flag legitimate hedge/tense removals as CHANGED.
 EQUIV_SYSTEM = (
-    "You compare an ORIGINAL statement to a CLEANED rewrite of it. The rewrite is supposed to "
-    "remove only incidental/spurious surface features (specific words, off-topic text about "
-    "pets, confidence/hedging markers, verb tense, phrasing) WITHOUT changing the central "
-    "factual claim or its truth value. "
-    "Decide whether the rewrite asserts the SAME claim as the original, or CHANGED it — "
-    "negated it, altered a number/quantity/entity/relation, or asserted something different. "
-    "Do NOT judge whether either statement is true in the real world; only whether the rewrite "
-    "says the same thing as the original. Respond with exactly one word: SAME or CHANGED."
+    "You compare an ORIGINAL statement to a CLEANED rewrite of it. The rewrite removes "
+    "incidental/spurious surface features while keeping the same underlying factual claim.\n\n"
+    "Answer SAME if both refer to the same underlying claim about the same subject — EVEN IF "
+    "they differ in any of these (which never change the claim or its truth value):\n"
+    "  - confidence / certainty / hedging: \"It's possible that X\", 'Perhaps X', 'Reportedly "
+    "X', 'Clearly X', 'Unquestionably X', and plain 'X' ALL make the same claim X. Adding or "
+    "removing certainty or hedging markers is NOT a change.\n"
+    "  - verb tense (past/present/future), word choice, phrasing, or removed off-topic text "
+    "(e.g. about pets).\n\n"
+    "Answer CHANGED only if the underlying proposition itself differs: a negation, a different "
+    "number/quantity/entity/relation, or a genuinely different assertion.\n\n"
+    "Do NOT judge whether either statement is true in the real world. Respond with exactly one "
+    "word: SAME or CHANGED."
 )
 
 
