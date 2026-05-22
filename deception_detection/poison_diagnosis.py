@@ -135,6 +135,7 @@ def clean_with_diagnosis(
     overwrite: bool = False,
     label_preserving: bool = True,
     judge_model: str = GATE_JUDGE_MODEL,
+    max_workers: int = 8,
 ) -> str:
     """Clean the poisoned training set using the chosen diagnosis hypothesis. Writes
     data/<poison>/cleaned/diagnosed_training_dist.json (variant: training_dist_diagnosed).
@@ -162,9 +163,7 @@ def clean_with_diagnosis(
     spec = POISONS[poison]
     statements, labels = _load_statements(spec)
     if label_preserving:
-        cleaned, n_rev = _clean_many_preserving(statements, prompt, model, judge_model)
-        print(f"  [gate] reverted {n_rev}/{len(statements)} sentences the cleaner changed "
-              f"({n_rev / len(statements):.1%})")
+        cleaned, _ = _clean_many_preserving(statements, prompt, model, judge_model, max_workers)
     else:
         from deception_detection.sanitization import _clean_many
         cleaned = _clean_many(statements, prompt, model)

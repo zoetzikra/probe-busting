@@ -239,19 +239,23 @@ def _make_client():
 
     # Org is optional: set OPENAI_ORG in .env to use the SPAR team org; leave it unset
     # (default None) for a personal key, which belongs to its own org automatically.
+    # max_retries lets the SDK back off and retry on 429s (incl. per-minute TPM limits)
+    # rather than our wrapper giving up and keeping the original (uncleaned) statement.
     org = os.environ.get("OPENAI_ORG") or None
-    return OpenAI(organization=org)
+    return OpenAI(organization=org, max_retries=6)
 
 
-def clean_one(client, system_prompt: str, statement: str, model: str = CLEAN_MODEL) -> str:
-    """Clean a single statement. Retries a few times, then returns the original
+def clean_one(
+    client, system_prompt: str, statement: str, model: str = CLEAN_MODEL, temperature: float = 0
+) -> str:
+    """Clean a single statement. Retries a few times on API error, then returns the original
     statement unchanged (so a single API failure can't silently drop an item)."""
     last_err: Exception | None = None
     for _attempt in range(4):
         try:
             resp = client.chat.completions.create(
                 model=model,
-                temperature=0,
+                temperature=temperature,
                 max_tokens=400,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -334,18 +338,41 @@ def claim_preserved(client, original: str, cleaned: str, model: str = GATE_JUDGE
     return True
 
 
+# Appended to the cleaning prompt when a first attempt changed the claim, to push the cleaner
+# toward a meaning-preserving rewrite on retry.
+RETRY_SUFFIX = (
+    " IMPORTANT: a previous attempt accidentally CHANGED the meaning. Rewrite again, removing "
+    "ONLY the spurious surface feature; keep the central claim and its truth value EXACTLY the "
+    "same — do not negate it, correct it, add to it, or drop any part of it."
+)
+GATE_MAX_RETRIES = 2
+
+
 def _clean_one_preserving(
-    client, system_prompt: str, statement: str, clean_model: str, judge_model: str
-) -> tuple[str, bool]:
-    """Clean, then compare the rewrite to the ORIGINAL. If the cleaner changed the claim,
-    revert to the original (corrective). Returns (text, reverted). The dataset label is never
-    used and world-truth is never judged."""
+    client, system_prompt: str, statement: str, clean_model: str, judge_model: str,
+    max_retries: int = GATE_MAX_RETRIES,
+) -> tuple[str, str]:
+    """Clean, then compare the rewrite to the ORIGINAL. If the cleaner CHANGED the claim, retry
+    with a strengthened meaning-preserving instruction (option b); only revert to the original
+    if it still can't produce a faithful rewrite. The dataset label is never used and world-truth
+    is never judged. Returns (text, status) with status in {ok, unchanged, retried, reverted}."""
     cleaned = clean_one(client, system_prompt, statement, clean_model)
     if cleaned.strip() == statement.strip():
-        return cleaned, False
-    if not claim_preserved(client, statement, cleaned, judge_model):
-        return statement, True  # cleaner changed the claim -> revert to original
-    return cleaned, False
+        return cleaned, "unchanged"
+    if claim_preserved(client, statement, cleaned, judge_model):
+        return cleaned, "ok"
+    # First attempt changed the claim -> retry with a stronger prompt + nonzero temperature
+    # (temp>0 so successive retries actually explore different rewrites).
+    for attempt in range(max_retries):
+        retried = clean_one(
+            client, system_prompt + RETRY_SUFFIX, statement, clean_model,
+            temperature=0.4 + 0.2 * attempt,
+        )
+        if retried.strip() == statement.strip() or claim_preserved(
+            client, statement, retried, judge_model
+        ):
+            return retried, "retried"
+    return statement, "reverted"  # all retries still changed the claim -> keep original
 
 
 def _clean_many_preserving(
@@ -355,10 +382,12 @@ def _clean_many_preserving(
     judge_model: str = GATE_JUDGE_MODEL,
     max_workers: int = 8,
 ) -> tuple[list[str], int]:
-    """Corrective-gated parallel clean (cleaned-vs-original equivalence). Returns
-    (cleaned, n_reverted). No labels needed — the gate never consults them."""
+    """Corrective-gated parallel clean (cleaned-vs-original equivalence, retry-then-revert).
+    Returns (cleaned, n_reverted). Prints a breakdown of ok/unchanged/retried/reverted so the
+    raw cleaner-change rate (retried+reverted) and the final give-up rate (reverted) are both
+    visible. No labels needed — the gate never consults them."""
     client = _make_client()
-    out: list[tuple[str, bool] | None] = [None] * len(statements)
+    out: list[tuple[str, str] | None] = [None] * len(statements)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {
             ex.submit(_clean_one_preserving, client, system_prompt, s, clean_model, judge_model): i
@@ -367,8 +396,14 @@ def _clean_many_preserving(
         for fut in tqdm(as_completed(futs), total=len(futs), desc="cleaning+gate"):
             out[futs[fut]] = fut.result()
     cleaned = [r[0] if r else statements[i] for i, r in enumerate(out)]
-    n_reverted = sum(1 for r in out if r and r[1])
-    return cleaned, n_reverted
+    counts = {k: sum(1 for r in out if r and r[1] == k)
+              for k in ("ok", "unchanged", "retried", "reverted")}
+    n = len(statements)
+    n_changed = counts["retried"] + counts["reverted"]
+    print(f"  [gate] cleaner changed {n_changed}/{n} ({n_changed / n:.1%}); "
+          f"salvaged-by-retry {counts['retried']}, reverted-to-original {counts['reverted']} "
+          f"({counts['reverted'] / n:.1%})")
+    return cleaned, counts["reverted"]
 
 
 # --------------------------------------------------------------------------------------
@@ -423,15 +458,14 @@ def _dump_statements(spec: PoisonSpec, statements: list[str], labels: list[int],
 # --------------------------------------------------------------------------------------
 
 
-def _run_clean(spec, statements, labels, prompt, model, label_preserving, judge_model):
+def _run_clean(spec, statements, labels, prompt, model, label_preserving, judge_model,
+               max_workers=8):
     """Dispatch to the gated or ungated cleaner; return (cleaned, n_reverted).
     `labels` is accepted for signature stability but the equivalence gate never uses it."""
     if label_preserving:
-        cleaned, n_reverted = _clean_many_preserving(statements, prompt, model, judge_model)
-        print(f"  [gate] reverted {n_reverted}/{len(statements)} sentences the cleaner changed "
-              f"({n_reverted / len(statements):.1%})")
-        return cleaned, n_reverted
-    return _clean_many(statements, prompt, model), 0
+        # _clean_many_preserving prints the ok/retried/reverted breakdown itself.
+        return _clean_many_preserving(statements, prompt, model, judge_model, max_workers)
+    return _clean_many(statements, prompt, model, max_workers), 0
 
 
 def clean(
@@ -441,10 +475,12 @@ def clean(
     overwrite: bool = False,
     label_preserving: bool = True,
     judge_model: str = GATE_JUDGE_MODEL,
+    max_workers: int = 8,
 ) -> str:
     """Clean one (poison, level) cell. Writes data/<poison>/cleaned/<level>_training_dist.json.
     With label_preserving=True (default) each rewrite is compared to the ORIGINAL sentence and
-    reverted if the cleaner changed the claim (corrective gate; never consults the label)."""
+    reverted if the cleaner changed the claim (corrective gate; never consults the label).
+    Lower max_workers for models with tight per-minute token limits (e.g. gpt-4.1)."""
     if poison not in POISONS:
         raise ValueError(f"Unknown poison {poison!r}; choose from {list(POISONS)}")
     spec = POISONS[poison]
@@ -456,8 +492,9 @@ def clean(
     statements, labels = _load_statements(spec)
     prompt = get_prompt(poison, level)
     print(f"[clean] poison={poison} level={level} n={len(statements)} model={model} "
-          f"gate={label_preserving}")
-    cleaned, _ = _run_clean(spec, statements, labels, prompt, model, label_preserving, judge_model)
+          f"gate={label_preserving} workers={max_workers}")
+    cleaned, _ = _run_clean(spec, statements, labels, prompt, model, label_preserving,
+                            judge_model, max_workers)
     _dump_statements(spec, cleaned, labels, out_path)
     print(f"[done] wrote {out_path}")
     return str(out_path)
