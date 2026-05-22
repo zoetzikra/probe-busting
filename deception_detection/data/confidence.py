@@ -1,40 +1,43 @@
 import json
-
 from pathlib import Path
+
 from deception_detection.data.base import (
     Dialogue,
     DialogueDataset,
     DialogueDataType,
     Message,
 )
+from deception_detection.sanitization import (
+    EXTRA_TRAIN_VARIANTS,
+    is_training_style,
+    resolve_train_variant_path,
+)
 from deception_detection.types import Label
-from deception_detection.utils import REPO_ROOT
+
 
 class Confidence(DialogueDataset):
     base_name = "confidence"
     padding = {model_type: {"left": 0, "right": 0} for model_type in ["gemma", "mistral", "llama"]}
-    
+
     all_variants: list[str] = [
         "training_dist",
-        "test_dist"
+        "test_dist",
+        *EXTRA_TRAIN_VARIANTS,
     ]
-    
+
     def _get_dialogues(self) -> DialogueDataType:
         statements, labels = self._load_data()
-        if self.variant == "training_dist":
+        if is_training_style(self.variant):
             user_messages = [
                 "Pretend you're an honest person making statements about the world.",
                 "Pretend you're a dishonest person making statements about the world.",
             ]
-            
+
             sys_prefixes = None, None
-            
-        elif self.variant == "test_dist":
+
+        else:
             user_messages = None, None
             sys_prefixes = None, None
-            
-        else:
-            raise ValueError(f"Unknown variant: {self.variant}")
         
         dialogues = self._get_prefixed_dialogues(
             statements,
@@ -48,14 +51,9 @@ class Confidence(DialogueDataset):
         return dialogues, labels_new, None
     
     def _load_data(self) -> tuple[list[str], list[int]]:
-        if self.variant == "training_dist":
-            data_path: Path = REPO_ROOT / "data/confidence/confidence_training_dist.json"
-        elif self.variant == "test_dist":
-            data_path: Path = REPO_ROOT / "data/confidence/confidence_test_dist.json"
-        else:
-            raise ValueError(f"Unknown variant: {self.variant}")
-        
-        with open(data_path, "r") as f:
+        data_path: Path = resolve_train_variant_path("confidence", self.variant)
+
+        with open(data_path) as f:
             data = json.load(f)
             
         statements = []
